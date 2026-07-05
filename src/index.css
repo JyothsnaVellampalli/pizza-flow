@@ -1,0 +1,45 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", ui-serif, Georgia, serif;
+}
+
+@media print {
+  body {
+    background-color: white !important;
+    color: black !important;
+  }
+  body * {
+    visibility: hidden;
+  }
+  #invoice-print-area, #invoice-print-area * {
+    visibility: visible;
+  }
+  #invoice-print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    border: none !important;
+    background: white !important;
+    color: black !important;
+    box-shadow: none !important;
+  }
+  /* Dark text for better legibility when printed */
+  #invoice-print-area text, 
+  #invoice-print-area span, 
+  #invoice-print-area h3, 
+  #invoice-print-area h4, 
+  #invoice-print-area h5, 
+  #invoice-print-area div,
+  #invoice-print-area td,
+  #invoice-print-area th {
+    color: #000000 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
