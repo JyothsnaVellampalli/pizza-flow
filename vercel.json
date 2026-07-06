@@ -3,6 +3,14 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+     {
+      "source": "/api/(.*)",
+      "destination": "/dist/server.cjs"
+    },
+    { 
+      "source": "/(.*)", 
+      "destination": "/index.html" 
+    }
   ]
 }
+
