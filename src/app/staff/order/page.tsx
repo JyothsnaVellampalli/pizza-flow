@@ -20,9 +20,9 @@ export default function StaffOrderPage() {
         }
 
         const { data: profile } = await supabase
-          .from("profiles")
+          .from("staff")
           .select("role, display_name")
-          .eq("id", user.id)
+          .eq("staff_id", user.id)
           .maybeSingle();
 
         setStaff({

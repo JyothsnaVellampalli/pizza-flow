@@ -30,9 +30,9 @@ function ProtectedRoute({ children, requireAdmin }: { children: React.ReactNode;
           if (user) {
             setIsAuthenticated(true);
             const { data: profile, error } = await supabase
-              .from("profiles")
+              .from("staff")
               .select("role, display_name")
-              .eq("id", user.id)
+              .eq("staff_id", user.id)
               .maybeSingle();
 
             if (!error && profile) {

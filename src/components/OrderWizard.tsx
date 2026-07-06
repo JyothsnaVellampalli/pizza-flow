@@ -12,7 +12,7 @@ import {
   DISCOUNT_THRESHOLD 
 } from "../lib/core";
 import { 
-  getMenuItems, createOrder, MenuItem, Order 
+  getMenuItems, createOrder, MenuItem, Order, getUnoccupiedTables, updateTableOccupiedStatus, Table
 } from "../lib/supabase";
 
 interface OrderWizardProps {
@@ -38,6 +38,7 @@ export default function OrderWizard({ source, tableNumberParam }: OrderWizardPro
 
   // Load menu items
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [unoccupiedTables, setUnoccupiedTables] = useState<Table[]>([]);
   const [loadingMenu, setLoadingMenu] = useState(true);
 
   // Form State
@@ -70,15 +71,104 @@ export default function OrderWizard({ source, tableNumberParam }: OrderWizardPro
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [cartError, setCartError] = useState<string | null>(null);
 
+  // AI Suggestions states
+  const [suggestions, setSuggestions] = useState<Array<{
+    title: string;
+    reason: string;
+    baseCode: string;
+    pizzaCode: string;
+    toppings: Array<{ code: string; quantity: number }>;
+  }>>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
+
+  // Fetch AI suggestions when entering Step 2
+  useEffect(() => {
+    if (step === 2 && customerPhone && menuItems.length > 0) {
+      async function fetchSuggestions() {
+        setLoadingSuggestions(true);
+        setSuggestionsError(null);
+        try {
+          const response = await fetch("/api/ai/suggestions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              customerName,
+              customerPhone,
+              menuItems
+            })
+          });
+          const data = await response.json();
+          if (data.success && data.suggestions) {
+            setSuggestions(data.suggestions);
+          } else {
+            setSuggestionsError(data.error || "Could not load suggestions");
+          }
+        } catch (err) {
+          console.error("Failed to load AI suggestions:", err);
+          setSuggestionsError("Unable to reach suggestions service");
+        } finally {
+          setLoadingSuggestions(false);
+        }
+      }
+      fetchSuggestions();
+    }
+  }, [step, customerPhone, menuItems]);
+
+  const handleAddSuggestedToCart = (sug: typeof suggestions[0]) => {
+    const baseItem = menuItems.find(m => m.code === sug.baseCode && m.category === "base");
+    const pizzaItem = menuItems.find(m => m.code === sug.pizzaCode && m.category === "pizza");
+    
+    if (!baseItem || !pizzaItem) {
+      alert("Selected suggestion contains items that are currently unavailable in the menu.");
+      return;
+    }
+
+    const selectedTops: SelectedToppingConfig[] = [];
+    sug.toppings.forEach(t => {
+      const topItem = menuItems.find(m => m.code === t.code && m.category === "topping");
+      if (topItem) {
+        selectedTops.push({
+          topping: topItem,
+          quantity: t.quantity
+        });
+      }
+    });
+
+    const currentTotalQty = cart.reduce((sum, item) => sum + item.quantity, 0);
+    if (currentTotalQty + 1 > 10) {
+      setCartError("Adding another pizza would exceed the overall limit of 10 pizzas per order.");
+      return;
+    }
+
+    setCartError(null);
+
+    const cartItem: CartItem = {
+      id: `cart-${Math.random().toString(36).substr(2, 9)}`,
+      base: baseItem,
+      pizza: pizzaItem,
+      toppings: selectedTops,
+      quantity: 1
+    };
+
+    setCart(prev => [...prev, cartItem]);
+  };
+
   // Fetch Menu on Mount
   useEffect(() => {
     async function load() {
       try {
-        const items = await getMenuItems();
+        const [items, tables] = await Promise.all([
+          getMenuItems(),
+          getUnoccupiedTables()
+        ]);
         // Only active items for ordering
         setMenuItems(items.filter(i => i.is_active));
+        setUnoccupiedTables(tables);
       } catch (err) {
-        console.error("Error loading menu:", err);
+        console.error("Error loading menu or tables:", err);
       } finally {
         setLoadingMenu(false);
       }
@@ -435,10 +525,50 @@ export default function OrderWizard({ source, tableNumberParam }: OrderWizardPro
                       onChange={(e) => setTableNumber(e.target.value ? Number(e.target.value) : "")}
                       className="w-full bg-[#1A1A1A] border border-white/10 text-[#FAFAFA] rounded-xl px-4 py-3 appearance-none focus:outline-none focus:border-[#FF6B2B] hover:border-[#FF6B2B]/50 transition-colors"
                     >
-                      <option value="">Select Table (1 - 20)</option>
-                      {Array.from({ length: 20 }, (_, i) => i + 1).map((num) => (
-                        <option key={num} value={num}>Table {num}</option>
-                      ))}
+                      <option value="">Select Table</option>
+                      {(() => {
+                        const getTableNumFromName = (name: string) => {
+                          const match = name.match(/\d+/);
+                          return match ? parseInt(match[0], 10) : 0;
+                        };
+
+                        const optionsMap = new Map<number, { name: string; code?: string }>();
+                        
+                        unoccupiedTables.forEach(t => {
+                          const num = getTableNumFromName(t.table_name);
+                          if (num > 0) {
+                            optionsMap.set(num, { name: t.table_name, code: t.table_code });
+                          }
+                        });
+
+                        if (tableNumber !== "" && !optionsMap.has(Number(tableNumber))) {
+                          optionsMap.set(Number(tableNumber), { 
+                            name: `Table ${tableNumber}`, 
+                            code: `T${tableNumber}` 
+                          });
+                        }
+
+                        if (tableNumberParam && !optionsMap.has(tableNumberParam)) {
+                          optionsMap.set(tableNumberParam, { 
+                            name: `Table ${tableNumberParam}`, 
+                            code: `T${tableNumberParam}` 
+                          });
+                        }
+
+                        if (optionsMap.size === 0) {
+                          Array.from({ length: 20 }, (_, i) => i + 1).forEach(num => {
+                            optionsMap.set(num, { name: `Table ${num}`, code: `T${num}` });
+                          });
+                        }
+
+                        const sortedOptions = Array.from(optionsMap.entries()).sort((a, b) => a[0] - b[0]);
+
+                        return sortedOptions.map(([num, details]) => (
+                          <option key={num} value={num}>
+                            {details.name} {details.code ? `(${details.code})` : ""}
+                          </option>
+                        ));
+                      })()}
                     </select>
                     <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-[#9E9E9E]">
                       ▼
@@ -501,7 +631,16 @@ export default function OrderWizard({ source, tableNumberParam }: OrderWizardPro
                 <button
                   id="btn-next-1"
                   disabled={!isStep1Valid}
-                  onClick={() => setStep(2)}
+                  onClick={async () => {
+                    if (tableNumber !== "") {
+                      try {
+                        await updateTableOccupiedStatus(Number(tableNumber), true);
+                      } catch (err) {
+                        console.error("Failed to occupy table:", err);
+                      }
+                    }
+                    setStep(2);
+                  }}
                   className={`px-8 py-3 rounded-lg font-bold uppercase tracking-wider transition-all text-sm flex items-center gap-2 ${
                     isStep1Valid 
                       ? "bg-[#FF6B2B] hover:bg-[#E05A1F] text-white cursor-pointer shadow-lg shadow-[#FF6B2B]/20" 
@@ -533,6 +672,87 @@ export default function OrderWizard({ source, tableNumberParam }: OrderWizardPro
                 >
                   ← Edit Customer Info
                 </button>
+              </div>
+
+              {/* AI SUGGESTIONS PANEL */}
+              <div className="bg-[#1F1F1F]/60 border border-white/5 rounded-2xl p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-[#FF6B2B]">
+                    <Sparkles className="w-5 h-5 animate-pulse" />
+                    <h4 className="font-serif text-lg font-medium tracking-tight">AI-Powered Pizza Recommendations</h4>
+                  </div>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-white/5 text-[#9E9E9E] border border-white/5 font-mono">
+                    Based on Order History
+                  </span>
+                </div>
+
+                {loadingSuggestions ? (
+                  <div className="flex items-center justify-center py-6 gap-2 text-sm text-[#9E9E9E]">
+                    <RefreshCw className="w-4 h-4 animate-spin text-[#FF6B2B]" />
+                    <span>Analyzing past combinations...</span>
+                  </div>
+                ) : suggestionsError ? (
+                  <p className="text-xs text-[#E53935]">{suggestionsError}</p>
+                ) : suggestions.length === 0 ? (
+                  <p className="text-xs text-[#9E9E9E]">No specific previous history found. Add pizzas below to build their profile!</p>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {suggestions.map((sug, idx) => {
+                      const baseItem = menuItems.find(m => m.code === sug.baseCode && m.category === "base");
+                      const pizzaItem = menuItems.find(m => m.code === sug.pizzaCode && m.category === "pizza");
+                      
+                      return (
+                        <div 
+                          key={idx}
+                          className="bg-[#252525] border border-white/10 hover:border-[#FF6B2B]/30 rounded-xl p-4 flex flex-col justify-between transition-all duration-200"
+                        >
+                          <div className="space-y-2">
+                            <h5 className="font-semibold text-sm text-[#FAFAFA] flex items-center gap-1.5">
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-[#FF6B2B]/10 text-[#FF6B2B] font-mono">
+                                Sug #{idx + 1}
+                              </span>
+                              {sug.title}
+                            </h5>
+                            <p className="text-[#9E9E9E] text-xs leading-relaxed">
+                              {sug.reason}
+                            </p>
+                            
+                            <div className="pt-2 space-y-1 border-t border-white/5 text-xs font-mono text-[#FAFAFA]/90">
+                              <div className="flex justify-between">
+                                <span className="text-[#9E9E9E]">Base:</span>
+                                <span>{baseItem?.name || sug.baseCode}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-[#9E9E9E]">Recipe:</span>
+                                <span>{pizzaItem?.name || sug.pizzaCode}</span>
+                              </div>
+                              {sug.toppings.length > 0 && (
+                                <div className="flex justify-between items-start gap-1">
+                                  <span className="text-[#9E9E9E] shrink-0">Toppings:</span>
+                                  <span className="text-right">
+                                    {sug.toppings.map(t => {
+                                      const tItem = menuItems.find(m => m.code === t.code && m.category === "topping");
+                                      return `${tItem?.name || t.code} (x${t.quantity})`;
+                                    }).join(", ")}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleAddSuggestedToCart(sug)}
+                            className="w-full mt-4 py-2 px-3 rounded-lg bg-[#FF6B2B] hover:bg-[#E55A1B] text-white font-medium text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                          >
+                            <Plus size={14} />
+                            Add to Cart
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* THREE COLUMN PIZZA BUILDER GRID */}

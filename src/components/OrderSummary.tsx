@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
-import { getOrders, updateOrderStatus, Order, supabase, isSupabaseConfigured } from "../lib/supabase";
+import { getOrders, updateOrderStatus, Order, supabase, isSupabaseConfigured, getTables, Table } from "../lib/supabase";
 
 const MOCK_PROFILES = [
   { id: "s1-uuid", display_name: "Rahul Sharma", email: "rahul@slicematic.com", role: "staff" },
@@ -23,6 +23,7 @@ interface OrderSummaryProps {
 
 export default function OrderSummary({ allowStatusUpdate = true }: OrderSummaryProps) {
   const [orders, setOrders] = useState<Order[]>([]);
+  const [tables, setTables] = useState<Table[]>([]);
   const [loading, setLoading] = useState(true);
   const [timeFilter, setTimeFilter] = useState<"today" | "month" | "quarter" | "all">("today");
   
@@ -65,16 +66,16 @@ export default function OrderSummary({ allowStatusUpdate = true }: OrderSummaryP
     if (isSupabaseConfigured && supabase) {
       try {
         const { data, error } = await supabase
-          .from("profiles")
+          .from("staff")
           .select("*");
         if (!error && data) {
           setProfiles(data);
         } else {
-          console.warn("Could not load profiles from Supabase, using mock profiles:", error);
+          console.warn("Could not load staff from Supabase, using mock profiles:", error);
           setProfiles(MOCK_PROFILES);
         }
       } catch (e) {
-        console.error("Failed to load profiles:", e);
+        console.error("Failed to load staff profiles:", e);
         setProfiles(MOCK_PROFILES);
       }
     } else {
@@ -84,7 +85,7 @@ export default function OrderSummary({ allowStatusUpdate = true }: OrderSummaryP
 
   const getStaffNameAndEmail = (staffId?: string) => {
     if (!staffId) return null;
-    const profile = profiles.find(p => p.id === staffId);
+    const profile = profiles.find(p => p.staff_id === staffId || p.id === staffId);
     if (!profile) return null;
 
     const email = profile.email || profile.mailid || profile.username || "";
@@ -120,6 +121,12 @@ export default function OrderSummary({ allowStatusUpdate = true }: OrderSummaryP
     setLoading(true);
     try {
       await loadProfiles();
+      try {
+        const tableData = await getTables();
+        setTables(tableData);
+      } catch (tblErr) {
+        console.error("Failed to load tables in OrderSummary:", tblErr);
+      }
       // Fetch all orders without filtering, then perform precise local-time range filtering in memory.
       // This is extremely reliable across different server/timezone/client configurations and works with Mock DB.
       const data = await getOrders();
@@ -511,6 +518,140 @@ export default function OrderSummary({ allowStatusUpdate = true }: OrderSummaryP
           <linearGradient id="orange-grad-hourly-summary" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#FF6B2B" />
             <stop offset="100%" stopColor="#FF6B2B" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+      </svg>
+    );
+  };
+
+  // --- TABLE OCCUPANCY ANALYTICS HELPERS ---
+  const getTableOccupancyData = () => {
+    const occupancyMap: Record<number, number> = {};
+    const activeTables = tables.length > 0 ? tables : Array.from({ length: 20 }, (_, i) => ({
+      table_id: i + 1,
+      table_name: `Table ${i + 1}`,
+      table_code: `T${i + 1}`,
+      is_occupied: false
+    }));
+
+    activeTables.forEach(t => {
+      occupancyMap[t.table_id] = 0;
+    });
+
+    filteredOrders.forEach(o => {
+      const tId = o.table_id || o.table_number;
+      if (tId !== undefined && occupancyMap[tId] !== undefined) {
+        occupancyMap[tId]++;
+      } else if (tId !== undefined) {
+        occupancyMap[tId] = 1;
+      }
+    });
+
+    const rawData = activeTables.map(t => ({
+      table_id: t.table_id,
+      table_name: t.table_name,
+      table_code: t.table_code || `T${t.table_id}`,
+      occupancy: occupancyMap[t.table_id] || 0
+    }));
+
+    const sortedData = [...rawData]
+      .sort((a, b) => b.occupancy - a.occupancy)
+      .filter(t => t.occupancy > 0);
+
+    const maxOccupancy = sortedData.length > 0 ? Math.max(...sortedData.map(d => d.occupancy)) : 1;
+
+    return { sortedData, maxOccupancy, allData: rawData };
+  };
+
+  const drawTableOccupancyChart = () => {
+    const { sortedData, maxOccupancy } = getTableOccupancyData();
+
+    if (sortedData.length === 0) {
+      return (
+        <div className="py-8 text-center text-xs text-neutral-400 font-mono">
+          No active table occupancy recorded.
+        </div>
+      );
+    }
+
+    const width = 600;
+    const height = 180;
+    const paddingLeft = 40;
+    const paddingRight = 20;
+    const paddingTop = 25;
+    const paddingBottom = 30;
+
+    const chartWidth = width - paddingLeft - paddingRight;
+    const chartHeight = height - paddingTop - paddingBottom;
+
+    // Show up to 10 active tables
+    const displayData = sortedData.slice(0, 10);
+    const barWidth = Math.min(30, (chartWidth / displayData.length) * 0.5);
+    const gap = (chartWidth - (barWidth * displayData.length)) / (displayData.length + 1);
+
+    return (
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto text-neutral-800 font-mono">
+        {[0, 0.25, 0.5, 0.75, 1].map((ratio, idx) => {
+          const y = paddingTop + chartHeight * (1 - ratio);
+          const val = Math.round(maxOccupancy * ratio);
+          return (
+            <g key={idx} className="opacity-10">
+              <line x1={paddingLeft} y1={y} x2={width - paddingRight} y2={y} stroke="#1A1A1A" strokeWidth={0.5} strokeDasharray="3 3" />
+              <text x={paddingLeft - 8} y={y + 3} textAnchor="end" className="text-[9px] font-mono fill-neutral-600 font-bold">
+                {val}
+              </text>
+            </g>
+          );
+        })}
+
+        {displayData.map((d, idx) => {
+          const x = paddingLeft + gap + idx * (barWidth + gap);
+          const barHeight = maxOccupancy > 0 ? (d.occupancy / maxOccupancy) * chartHeight : 0;
+          const y = paddingTop + chartHeight - barHeight;
+
+          return (
+            <g key={idx}>
+              <rect
+                x={x}
+                y={y}
+                width={barWidth}
+                height={Math.max(2, barHeight)}
+                rx={3}
+                fill="url(#table-blue-gradient-report)"
+              />
+              <text
+                x={x + barWidth / 2}
+                y={y - 6}
+                textAnchor="middle"
+                className="text-[9px] font-bold fill-neutral-800"
+              >
+                {d.occupancy}
+              </text>
+              <text
+                x={x + barWidth / 2}
+                y={paddingTop + chartHeight + 14}
+                textAnchor="middle"
+                className="text-[9px] font-mono font-bold fill-neutral-500"
+              >
+                {d.table_code}
+              </text>
+            </g>
+          );
+        })}
+
+        <line
+          x1={paddingLeft}
+          y1={paddingTop + chartHeight}
+          x2={width - paddingRight}
+          y2={paddingTop + chartHeight}
+          stroke="#D1D5DB"
+          strokeWidth={1}
+        />
+
+        <defs>
+          <linearGradient id="table-blue-gradient-report" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#3B82F6" />
+            <stop offset="100%" stopColor="#1D4ED8" />
           </linearGradient>
         </defs>
       </svg>
@@ -1629,6 +1770,19 @@ export default function OrderSummary({ allowStatusUpdate = true }: OrderSummaryP
                       <div className="h-full flex flex-col justify-between">
                         {renderTopStaffList(staffSales.staffList)}
                       </div>
+                    </div>
+                  </div>
+
+                  {/* Table Occupancy Analytics */}
+                  <div className="border border-neutral-200 rounded-2xl p-5 text-left space-y-4">
+                    <div>
+                      <h4 className="font-serif font-extrabold text-[#111] text-xs uppercase tracking-wider">Table Occupancy Analytics</h4>
+                      <p className="text-[10px] font-mono text-neutral-400 mt-0.5">
+                        Occupancy volume showing total orders fulfilled per table. Correlating table IDs with table codes.
+                      </p>
+                    </div>
+                    <div className="bg-neutral-50/50 border border-neutral-100 rounded-xl p-2">
+                      {drawTableOccupancyChart()}
                     </div>
                   </div>
 

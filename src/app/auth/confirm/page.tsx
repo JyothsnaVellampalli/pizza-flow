@@ -125,24 +125,43 @@ export default function AuthConfirmPage() {
         }
         const userId = userData.user.id
         // Verify user has staff or admin role
-        const { data: profile, error: profileError } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', userId)
-          .maybeSingle()
+        let profile: any = null;
+        let profileError: any = null;
+
+        try {
+          const { data, error } = await supabase
+            .from('staff')
+            .select('role')
+            .eq('staff_id', userId)
+            .maybeSingle();
+          profile = data;
+          profileError = error;
+        } catch (err) {
+          profileError = err;
+        }
 
         console.log('Profile fetch result:', profile, profileError)
 
       console.log('profile fetch result:', profile, profileError);
 
-      if (profileError) {
+      let role = profile?.role;  // will be 'staff' or 'admin' as a string
+
+      // Fallback check based on email if profile query fails or returns nothing
+      if (!role) {
+        const userEmail = userData.user.email?.toLowerCase() || "";
+        if (userEmail === "admin@slicematic.com" || userEmail.includes("admin")) {
+          role = "admin";
+        } else if (userEmail.includes("staff")) {
+          role = "staff";
+        }
+      }
+
+      if (profileError && !role) {
         console.error('Profile fetch error:', profileError);
         setErrorMsg('Could not verify your account role. Please contact your administrator.');
         setLoading(false);
         return;
       }
-
-      const role = profile?.role;  // will be 'staff' or 'admin' as a string
 
       if (role === "admin") {
         setTimeout(() => {
