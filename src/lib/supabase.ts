@@ -179,6 +179,18 @@ export async function createOrder(
   }
   
   // 1. Insert order
+  let finalStaffId = order.staff_id || null;
+  if (!finalStaffId && order.order_source === "staff") {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        finalStaffId = user.id;
+      }
+    } catch (e) {
+      console.error("Failed to fetch user session in createOrder:", e);
+    }
+  }
+
   const { data: orderData, error: orderError } = await supabase
     .from("orders")
     .insert([{
@@ -194,7 +206,7 @@ export async function createOrder(
       payment_mode: order.payment_mode,
       order_source: order.order_source,
       status: order.status,
-      staff_id: order.staff_id || null
+      staff_id: finalStaffId
     }])
     .select();
 
